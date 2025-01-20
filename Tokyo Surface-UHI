@@ -10,8 +10,8 @@ return image.updateMask (mask);
 }
 
 //set or filter the date
-var startDate = ee.Date  ('2023-01-01');
-var endDate =  ee.Date ('2023-12-31');
+var startDate = ee.Date  ('2024-01-01');
+var endDate =  ee.Date ('2024-12-31');
 
 //analysing landsat 8 satellige image
 var landsat8 = imageCollection
