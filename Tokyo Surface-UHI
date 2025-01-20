@@ -1,0 +1,131 @@
+
+// First need to filter the cloud cover
+function maskClouds (image){
+  var qa = image.select ('QA_PIXEL');
+  var cloudShadowbitMask = 1 << 3;
+  var cloudsbitMask = 1 << 5;
+  var mask = qa.bitwiseAnd (cloudShadowbitMask).eq (0)
+                .and(qa.bitwiseAnd(cloudsbitMask).eq(0));
+return image.updateMask (mask);
+}
+
+//set or filter the date
+var startDate = ee.Date  ('2023-01-01');
+var endDate =  ee.Date ('2023-12-31');
+
+//analysing landsat 8 satellige image
+var landsat8 = imageCollection
+                .filterDate(startDate, endDate)
+                .filterBounds (aoi)
+                .map(maskClouds)
+                .median()
+                .clip(aoi)
+                
+// add landsat 8 on the map layer
+Map.addLayer (landsat8, imageVisParam, 'Landsat 8 Jogja');
+Map.centerObject (aoi, 11);
+
+//calculate the Normalized Vegetation Index
+var ndvi = landsat8.normalizedDifference(['SR_B5','SR_B4']).rename ('NDVI');
+//visualized NDVI
+var ndviVis = {
+    min: -1,
+    max: 1,
+    palette: ['red','black','green']
+};
+
+//add NDVI layer to map
+Map.addLayer (ndvi, ndviVis, 'NDVI Tokyo');
+
+//calculate NDVI min value
+var ndviMin = ee.Number (ndvi.reduceRegion({
+  reducer : ee.Reducer.min(),
+  geometry: aoi,
+  scale : 30
+}). values().get(0));
+
+//calculate NDVI max value
+var ndviMax = ee.Number (ndvi.reduceRegion({
+  reducer : ee.Reducer.max(),
+  geometry: aoi,
+  scale : 30
+}). values().get(0));
+//print value to GEE console
+print("Minimum NDVI", ndviMin);
+print("Maximum NDVI", ndviMax);
+
+//calculate the Fraction of Vegetation (FV) = (NDVI - ndviMin / ndviMax - ndviMin)^2
+var fv = ((ndvi.subtract(ndviMin)).divide(ndviMax.subtract(ndviMin)))
+        .pow(ee.Number (2))
+        .rename ('FV');
+print ("FV",fv);
+// calculate emmisivity (em) = 0.004*FV + 0.986
+//0.004 is the coeficient of emmisivity of vegetation
+//0.986 us the base coeficient for other land cover
+var em = fv.multiply (ee.Number (0.004)).add(ee.Number(0.986))
+        .rename ('EM')
+print("EM", em);
+
+// calling SR_Band Thermal on landsat 8 (called ST_B10)
+var thermal = landsat8.select('ST_B10').multiply(0.00341802). add(149.0)
+            .rename ('thermal');
+            
+            //calculate Land Surface Temperature
+//Formula LST = (TB/ 1+ (λ*TB/1.438))*ln(em)) - 273.15
+var lst =  thermal.expression (
+              '(TB/ (1+ (0.00115*(TB/1.438))*log(em))) - 273.15',{
+                'TB': thermal.select ('thermal'),
+                'em':em,
+              }).rename ('lst');
+//visualise the Land Surface Temperature (LST)
+Map.addLayer (lst, {
+      min: 25,
+      max: 50,
+      palette: [
+        '040274', '040281', '0502a3', '0502b8', '0502ce', '0502e6',
+        '0602ff', '235cb1', '307ef3', '269db1', '30c8e2', '32d3ef',
+        '3be285', '3ff38f', '86e26f', '3ae237', 'b5e22e', 'd6e21f',
+        'fff705', 'ffd611', 'ffb613', 'ff8b13', 'ff6e08', 'ff500d',
+        'ff0000', 'de0101', 'c21301', 'a71001', '911003']}
+        , 'LST Tokyo');
+
+//calculate UTFVI. The formula = LST - LST mean /LST
+var lst_mean = ee.Number (lst.reduceRegion({
+          reducer : ee.Reducer.mean (),
+          geometry:aoi,
+          scale: 30
+}) .values ().get(0));
+// print the lst_mea
+print("LST mean", lst_mean);
+// input the UTFVI formula
+var UTFVI = lst.subtract((lst_mean)).divide(lst);
+//visual UTFVI onto map layer
+Map.addLayer (UTFVI, {
+  min: -0.5,
+  max: 0.5,
+  palette: ['green','yellow','red']
+}, 'UTFVI Tokyo');
+
+//Classify UTFVI into UHI --> make a class from low to high level of UHI effect
+var UHI = ee.Image (0)
+        .where ((UTFVI).lt(0),1)
+        .where ((UTFVI).gte(0). and ((UTFVI). lt(0.05)),2)
+        .where ((UTFVI).gte(0.05).and ((UTFVI).lt(0.1)),3)
+        .where ((UTFVI).gte(0.1).and ((UTFVI).lt(0.15)),4)
+        .where ((UTFVI).gte(0.15), 5)
+        .rename ('UHI'). clip(aoi);
+        
+//visualize UHI with symbol and parameter
+Map.addLayer (UHI,{
+  min: 1,
+  max: 5,
+  palette: ['blue','green','yellow','orange','red']
+}, 'UHI Tokyo');
+
+//export data
+Export.image.toDrive({
+  image: lst,
+  description: 'LST_map',
+  scale: 10,
+  region: aoi,
+});
